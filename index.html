@@ -664,8 +664,9 @@
     return { tasks: [], completedDates: {}, totalCompleted: 0 };
   }
   var pushTimer = null;
+  var syncedWithServer = false; // becomes true only after a successful GET from the backend
   function pushToServer(){
-    if(!apiReady()) return;
+    if(!apiReady() || !syncedWithServer) return; // never overwrite the server before we've read it at least once
     clearTimeout(pushTimer);
     pushTimer = setTimeout(function(){
       fetch(API_BASE + "/api/state", {
@@ -682,12 +683,13 @@
   }
 
   function pullFromServer(){
-    if(!apiReady()) return;
+    if(!apiReady()){ syncedWithServer = true; return; } // no backend configured/reachable: local storage is authoritative
     fetch(API_BASE + "/api/state", {
       headers: { "X-Telegram-Init-Data": tgInitData() }
     }).then(function(r){ return r.ok ? r.json() : null; }).then(function(remote){
-      if(!remote) return;
+      if(!remote) return; // failed read: stay unsynced, keep local-only, never push until a real pull succeeds
       state = remote;
+      syncedWithServer = true;
       try{ localStorage.setItem(STORE_KEY, JSON.stringify(state)); }catch(e){}
       render();
     }).catch(function(){});

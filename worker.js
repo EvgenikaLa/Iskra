@@ -149,6 +149,8 @@ async function loadState(env) {
 }
 
 async function saveState(env, state) {
+  const prev = await env.TASKS_KV.get(KV_KEY);
+  if (prev) await env.TASKS_KV.put(KV_KEY + ":backup", prev); // one-deep safety net against accidental overwrites
   await env.TASKS_KV.put(KV_KEY, JSON.stringify(state));
 }
 
