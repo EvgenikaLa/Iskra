@@ -21,8 +21,13 @@ const GOAL = {
   targetDate: "2026-12-31",
 };
 
+const DTV_DEADLINE = "2026-11-01"; // soft deadline: apply by here per the strategy plan
+const PLAN_LINKS =
+  "Стратегия: https://claude.ai/code/artifact/ec9942a3-c98f-4bd2-ba39-5d2ad7d5803b\n" +
+  "План на 3 месяца: https://claude.ai/code/artifact/8519fe32-d077-4352-b0fe-8f118a6becb9";
+
 function emptyState() {
-  return { tasks: [], completedDates: {}, totalCompleted: 0, goal: GOAL };
+  return { tasks: [], completedDates: {}, totalCompleted: 0, goal: GOAL, lastAnnouncedMonth: null };
 }
 
 function corsHeaders(origin) {
@@ -142,6 +147,7 @@ async function loadState(env) {
       completedDates: s.completedDates && typeof s.completedDates === "object" ? s.completedDates : {},
       totalCompleted: typeof s.totalCompleted === "number" ? s.totalCompleted : 0,
       goal: GOAL,
+      lastAnnouncedMonth: typeof s.lastAnnouncedMonth === "string" ? s.lastAnnouncedMonth : null,
     };
   } catch (e) {
     return emptyState();
@@ -241,6 +247,7 @@ function newTask(text) {
     remindAt: null, reminded: false, staleNotified: false, goalTagged: false,
     recurrence: null, remindTime: null, remindedThisCycle: false, lastDoneCycle: null,
     category: null, // "activity" | "growth" | null
+    critical: false, criticalAlerted: false,
   };
 }
 
@@ -276,8 +283,10 @@ async function handleWebhook(request, env) {
     if (text === "/start") {
       await sendTelegram(
         env, chatId,
-        "Привет! Пиши сюда обычным текстом — новую задачу или отчёт о том, что уже сделано — и я добавлю это в Искру."
+        "Привет! Пиши сюда обычным текстом — новую задачу или отчёт о том, что уже сделано — и я добавлю это в Искру. Команда /plan пришлёт стратегию и план по переезду."
       );
+    } else if (text === "/plan" || text === "/strategy") {
+      await sendTelegram(env, chatId, PLAN_LINKS);
     }
     return new Response("ok");
   }
@@ -370,11 +379,13 @@ async function handleApiState(request, env) {
     if (!body || !Array.isArray(body.tasks)) {
       return json({ error: "bad shape" }, { status: 400 }, origin);
     }
+    const existing = await loadState(env);
     const state = {
       tasks: body.tasks,
       completedDates: body.completedDates && typeof body.completedDates === "object" ? body.completedDates : {},
       totalCompleted: typeof body.totalCompleted === "number" ? body.totalCompleted : 0,
       goal: GOAL, // server-owned, the app can't overwrite it
+      lastAnnouncedMonth: existing.lastAnnouncedMonth, // server-owned bookkeeping, not the app's concern
     };
     await saveState(env, state);
     return json({ ok: true }, { status: 200 }, origin);
@@ -432,20 +443,60 @@ async function runDailyAnalysis(env) {
 
 // ---------- morning plan ----------
 
+const RU_MONTHS = ["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
+
+// proactive monthly milestone transition: fires once, the first morning of a new calendar month
+async function announceMonthlyMilestoneIfDue(env, state) {
+  const p = mskParts(new Date());
+  const monthKey = p.y + "-" + String(p.mo + 1).padStart(2, "0");
+  if (state.lastAnnouncedMonth === monthKey) return false;
+
+  const prevMonthLabel = RU_MONTHS[(p.mo + 11) % 12];
+  const curMonthLabel = RU_MONTHS[p.mo];
+  const prevDone = state.tasks.filter((t) => t.goalTagged && t.done && t.why && t.why.indexOf(prevMonthLabel + " ·") === 0).length;
+  const prevTotal = state.tasks.filter((t) => t.goalTagged && t.why && t.why.indexOf(prevMonthLabel + " ·") === 0).length;
+  const curTasks = state.tasks.filter((t) => t.goalTagged && !t.done && t.why && t.why.indexOf(curMonthLabel + " ·") === 0);
+
+  let text = curMonthLabel + " начинается.";
+  if (prevTotal > 0) text += " " + prevMonthLabel + " закрыт: " + prevDone + "/" + prevTotal + " по плану переезда.";
+  if (curTasks.length) {
+    text += " Фокус месяца:\n" + curTasks.slice(0, 6).map((t) => "• " + t.text).join("\n");
+  } else {
+    text += " По плану на этот месяц отдельных задач не заведено — переезд не ставится на паузу, добавь их сама.";
+  }
+  await sendTelegram(env, env.ALLOWED_TG_ID, text);
+
+  state.lastAnnouncedMonth = monthKey;
+  await saveState(env, state);
+  return true;
+}
+
 async function morningPlan(env) {
   const state = await loadState(env);
+
+  await announceMonthlyMilestoneIfDue(env, state);
+
   const open = state.tasks.filter((t) => !t.done);
   const streak = computeStreak(state.completedDates);
   const daysLeft = daysUntil(GOAL.targetDate);
   const goalStale = daysSinceGoalProgress(state);
   const staleLine = goalStale !== null && goalStale >= 2 ? " К цели переезда — тишина " + goalStale + " дней. Сегодня это должно кончиться." : "";
 
+  const dtvLeft = daysUntil(DTV_DEADLINE);
+  const dtvOpen = state.tasks.some((t) => t.critical && !t.done);
+  let alarmLine = "";
+  if (dtvOpen && dtvLeft <= 7 && dtvLeft >= 0) {
+    alarmLine = "⚠ До срока подачи DTV (" + DTV_DEADLINE + ") — " + dtvLeft + " дн., заявление ещё не подано. Это точка отказа всей стратегии, тянуть больше нельзя.\n\n";
+  } else if (dtvOpen && dtvLeft < 0) {
+    alarmLine = "⚠ Срок подачи DTV (" + DTV_DEADLINE + ") уже прошёл, заявление не подано. Разбираться с этим — задача номер один сегодня, раньше остальных.\n\n";
+  }
+
   let text;
   if (!open.length) {
-    text = "Список задач пуст. До Таиланда " + daysLeft + " дней — пустой список сейчас работает против тебя, а не за тебя." + staleLine;
+    text = alarmLine + "Список задач пуст. До Таиланда " + daysLeft + " дней — пустой список сейчас работает против тебя, а не за тебя." + staleLine;
   } else {
     const lines = open.slice(0, 10).map((t) => "• " + t.text);
-    text = "На сегодня открыто задач: " + open.length + (streak > 0 ? " · цепочка: " + streak + " дн." : " · цепочки нет — начни её сегодня") +
+    text = alarmLine + "На сегодня открыто задач: " + open.length + (streak > 0 ? " · цепочка: " + streak + " дн." : " · цепочки нет — начни её сегодня") +
       " · до цели: " + daysLeft + " дн.\n" + lines.join("\n") + staleLine;
     if (open.length > 10) text += "\n…и ещё " + (open.length - 10) + ".";
   }

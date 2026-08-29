@@ -185,6 +185,15 @@
     border-radius: 999px;
     padding: 4px 10px;
   }
+  .goal-links{ margin: 10px 0 0; font-size: 12px; }
+  .goal-links a{
+    color: var(--accent-ink);
+    opacity: 0.8;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    margin-right: 14px;
+  }
+  .goal-links a:hover{ opacity: 1; }
   .goal-nums{ display: flex; gap: 24px; }
   .goal-num{ text-align: right; font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
   .goal-num .n{ display: block; font-size: 24px; font-weight: 500; }
@@ -296,6 +305,15 @@
 
   /* task list */
   .tasks{ display:flex; flex-direction:column; gap: 10px; }
+  .month-divider{
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 4px 2px -2px;
+  }
+  .month-divider:not(:first-child){ margin-top: 14px; }
   .task{
     background: var(--surface);
     border: 1px solid var(--border);
@@ -517,6 +535,7 @@
     flex-wrap: wrap;
   }
   .foot span{ color: var(--muted); font-size: 12px; }
+  .foot-actions{ display: flex; gap: 8px; }
   .reset-btn{
     background:none;
     border: 1px solid var(--border);
@@ -596,6 +615,10 @@
       <p class="goal-label">Цель</p>
       <p class="goal-title" id="goalTitle"></p>
       <p class="goal-stall" id="goalStall" style="display:none"></p>
+      <p class="goal-links">
+        <a href="https://claude.ai/code/artifact/ec9942a3-c98f-4bd2-ba39-5d2ad7d5803b" target="_blank" rel="noopener">стратегия</a>
+        <a href="https://claude.ai/code/artifact/8519fe32-d077-4352-b0fe-8f118a6becb9" target="_blank" rel="noopener">план на 3 месяца</a>
+      </p>
     </div>
     <div class="goal-nums">
       <div class="goal-num">
@@ -665,8 +688,11 @@
   </div>
 
   <div class="foot">
-    <span>Данные хранятся только в этом браузере.</span>
-    <button class="reset-btn" id="resetBtn">Сбросить всё</button>
+    <span>Синхронизировано с сервером.</span>
+    <span class="foot-actions">
+      <button class="reset-btn" id="exportBtn">Скачать бэкап</button>
+      <button class="reset-btn" id="resetBtn">Сбросить всё</button>
+    </span>
   </div>
 
 </div>
@@ -1178,7 +1204,21 @@
       empty.textContent = "Список пуст — добавь первую задачу выше.";
       list.appendChild(empty);
     } else {
-      undone.concat(done).forEach(function(t){ list.appendChild(taskNode(t)); });
+      var monthRe = /^(Январь|Февраль|Март|Апрель|Май|Июнь|Июль|Август|Сентябрь|Октябрь|Ноябрь|Декабрь) ·/;
+      var lastMonth = null;
+      undone.forEach(function(t){
+        var m = t.why && monthRe.exec(t.why);
+        var month = m ? m[1] : null;
+        if(month && month !== lastMonth){
+          var div = document.createElement("div");
+          div.className = "month-divider";
+          div.textContent = month;
+          list.appendChild(div);
+        }
+        if(month) lastMonth = month;
+        list.appendChild(taskNode(t));
+      });
+      done.forEach(function(t){ list.appendChild(taskNode(t)); });
     }
 
     // techniques
@@ -1202,6 +1242,18 @@
     addTask(input.value);
     input.value = "";
     input.focus();
+  });
+
+  document.getElementById("exportBtn").addEventListener("click", function(){
+    var blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "iskra-backup-" + todayKey() + ".json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   });
 
   document.getElementById("resetBtn").addEventListener("click", function(){
