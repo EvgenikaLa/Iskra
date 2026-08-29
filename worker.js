@@ -92,7 +92,7 @@ function mskParts(d) {
   const msk = new Date(d.getTime() + 3 * 3600 * 1000);
   return {
     y: msk.getUTCFullYear(), mo: msk.getUTCMonth(), da: msk.getUTCDate(),
-    h: msk.getUTCHours(), mi: msk.getUTCMinutes(),
+    h: msk.getUTCHours(), mi: msk.getUTCMinutes(), wd: msk.getUTCDay(), // 0=Sunday..6=Saturday
   };
 }
 
@@ -164,6 +164,16 @@ function markTaskDone(state, task) {
   const k = mskDateKey(new Date());
   state.completedDates[k] = (state.completedDates[k] || 0) + 1;
   state.totalCompleted += 1;
+  if (task.recurrence) task.lastDoneCycle = k; // keeps it done until the next cycle resets it
+}
+
+const WEEKDAY_RU = ["воскресеньям", "понедельникам", "вторникам", "средам", "четвергам", "пятницам", "субботам"];
+
+function recurrenceLabel(rec) {
+  if (rec === "daily") return "каждый день";
+  const m = /^weekly:([0-6])$/.exec(rec || "");
+  if (m) return "по " + WEEKDAY_RU[parseInt(m[1], 10)];
+  return "";
 }
 
 // ---------- Gemini ----------
@@ -207,10 +217,14 @@ async function classifyMessage(env, message) {
     '"other" — что угодно ещё (вопрос, реплика не по теме). ' +
     'Если пользователь явно просит напомнить в конкретное время (например "в 15:00", "в 3 часа дня", "через час") ' +
     'и это задача (не отчёт) — вычисли время как московское время в формате HH:MM (24ч) и положи в поле "time", иначе "time": null. ' +
-    'В поле "text" положи только суть дела, без служебных слов вроде "добавь задачу", "напомни", "напиши в список" и без указания времени. ' +
+    'Если задача повторяющаяся (например "каждый день", "ежедневно", "по вторникам", "каждую неделю") — положи в поле "recurrence" ' +
+    'значение "daily" для ежедневной или "weekly:N", где N — номер дня недели (0=воскресенье,1=понедельник,...,6=суббота), для еженедельной; ' +
+    'если задача разовая — "recurrence": null. ' +
+    'В поле "text" положи только суть дела, без служебных слов вроде "добавь задачу", "напомни", "напиши в список", без указания времени и повторения. ' +
     'В поле "goal_related" — true, если дело относится к цели переезда в Таиланд (см. выше), иначе false. ' +
+    'В поле "category" положи "activity", если дело про физическую активность/спорт/здоровье тела; "growth", если про саморазвитие/обучение/чтение/новые навыки; иначе null. ' +
     'Ответь СТРОГО одним JSON-объектом без пояснений и без markdown-разметки, формат: ' +
-    '{"type":"task|report|other","text":"краткая формулировка задачи или сделанного","time":"HH:MM"|null,"goal_related":true|false}. ' +
+    '{"type":"task|report|other","text":"краткая формулировка задачи или сделанного","time":"HH:MM"|null,"recurrence":"daily|weekly:N"|null,"goal_related":true|false,"category":"activity|growth"|null}. ' +
     'Сообщение: "' + message.replace(/"/g, "'") + '"';
 
   const raw = await geminiJSON(env, prompt);
@@ -225,6 +239,8 @@ function newTask(text) {
     id: uid(), text: text, done: false, doneAt: null, why: "",
     quick: false, steps: [], elapsed: 0, timerRunning: false, createdAt: Date.now(),
     remindAt: null, reminded: false, staleNotified: false, goalTagged: false,
+    recurrence: null, remindTime: null, remindedThisCycle: false, lastDoneCycle: null,
+    category: null, // "activity" | "growth" | null
   };
 }
 
@@ -291,14 +307,26 @@ async function handleWebhook(request, env) {
     } else {
       const t = newTask(parsed.text);
       t.goalTagged = !!parsed.goal_related;
+      if (parsed.category === "activity" || parsed.category === "growth") t.category = parsed.category;
+
       let timeNote = "";
-      if (parsed.time) {
+      const validRecurrence = parsed.recurrence === "daily" || /^weekly:[0-6]$/.test(parsed.recurrence || "");
+      if (validRecurrence) {
+        t.recurrence = parsed.recurrence;
+        if (parsed.time && /^([01]?\d|2[0-3]):([0-5]\d)$/.test(parsed.time)) {
+          t.remindTime = parsed.time;
+          timeNote = " Буду напоминать в " + parsed.time + " (" + recurrenceLabel(t.recurrence) + ").";
+        } else {
+          timeNote = " Повторяю: " + recurrenceLabel(t.recurrence) + ".";
+        }
+      } else if (parsed.time) {
         const remindAt = remindAtFromTime(parsed.time);
         if (remindAt) {
           t.remindAt = remindAt;
           timeNote = " Напомню в " + parsed.time + ".";
         }
       }
+
       state.tasks.push(t);
       reply = "Добавила задачу: «" + parsed.text + "»." + (t.goalTagged ? " Отметила как шаг к Таиланду." : "") + timeNote;
     }
@@ -442,7 +470,7 @@ async function checkStaleTasks(env) {
   const state = await loadState(env);
   const now = Date.now();
   const threshold = 3 * 86400000; // 3 days
-  const stale = state.tasks.filter((t) => !t.done && !t.staleNotified && now - t.createdAt > threshold);
+  const stale = state.tasks.filter((t) => !t.done && !t.recurrence && !t.staleNotified && now - t.createdAt > threshold);
   if (!stale.length) return;
 
   const lines = stale.slice(0, 8).map((t) => "• " + t.text);
@@ -451,6 +479,52 @@ async function checkStaleTasks(env) {
 
   stale.forEach((t) => { t.staleNotified = true; });
   await saveState(env, state);
+}
+
+// ---------- recurring tasks: cycle reset + due reminders (runs every 15 min) ----------
+
+function isDueToday(recurrence, weekday) {
+  if (recurrence === "daily") return true;
+  const m = /^weekly:([0-6])$/.exec(recurrence || "");
+  return m ? parseInt(m[1], 10) === weekday : false;
+}
+
+async function processRecurringTasks(env) {
+  const state = await loadState(env);
+  const now = Date.now();
+  const p = mskParts(new Date());
+  const todayKey = mskDateKey(new Date());
+  let changed = false;
+
+  for (const t of state.tasks) {
+    if (!t.recurrence) continue;
+    const due = isDueToday(t.recurrence, p.wd);
+
+    // new cycle started (today isn't the cycle we last completed) -> reset
+    if (due && t.lastDoneCycle !== todayKey && t.done) {
+      t.done = false;
+      t.doneAt = null;
+      t.remindedThisCycle = false;
+      changed = true;
+    }
+    // cycle rolled over without a reminder having fired yet this cycle -> re-arm
+    if (t.remindedThisCycle && t.lastDoneCycle !== todayKey && !t.done) {
+      t.remindedThisCycle = false;
+      changed = true;
+    }
+
+    if (due && !t.done && t.remindTime && !t.remindedThisCycle) {
+      // compare against today's MSK instant directly (remindAtFromTime rolls to tomorrow once passed, which we don't want here)
+      const todayInstant = Date.UTC(p.y, p.mo, p.da, parseInt(t.remindTime.slice(0, 2), 10) - 3, parseInt(t.remindTime.slice(3), 10), 0, 0);
+      if (todayInstant <= now) {
+        await sendTelegram(env, env.ALLOWED_TG_ID, "Напоминание (" + recurrenceLabel(t.recurrence) + "): " + t.text);
+        t.remindedThisCycle = true;
+        changed = true;
+      }
+    }
+  }
+
+  if (changed) await saveState(env, state);
 }
 
 // ---------- goal: Thailand relocation ----------
@@ -513,6 +587,7 @@ export default {
       const jobs = {
         morning: morningPlan, evening: runDailyAnalysis, streak: streakSaver,
         reminders: checkTimedReminders, stale: checkStaleTasks, goal: weeklyGoalCheckin,
+        recurring: processRecurringTasks,
       };
       const job = jobs[url.searchParams.get("job")];
       if (!job) return new Response("unknown job", { status: 400 });
@@ -536,6 +611,7 @@ export default {
       case "*/15 * * * *":
         ctx.waitUntil(checkTimedReminders(env));
         ctx.waitUntil(checkStaleTasks(env));
+        ctx.waitUntil(processRecurringTasks(env));
         break;
       case "0 16 * * SUN": // Sunday 19:00 MSK
         ctx.waitUntil(weeklyGoalCheckin(env));

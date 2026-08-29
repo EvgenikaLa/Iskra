@@ -179,6 +179,38 @@
   .goal-num .n{ display: block; font-size: 24px; font-weight: 500; }
   .goal-num .l{ display: block; font-size: 10px; letter-spacing: 0.05em; text-transform: uppercase; opacity: 0.75; margin-top: 2px; }
 
+  /* counters */
+  .counters{
+    display: flex;
+    gap: 12px;
+    margin-bottom: 22px;
+  }
+  .counter{
+    flex: 1;
+    display: flex;
+    align-items: baseline;
+    gap: 9px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 16px;
+    box-shadow: var(--shadow);
+  }
+  .counter-icon{ font-size: 16px; }
+  .counter-n{
+    font-family: "IBM Plex Mono", monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 20px;
+    font-weight: 500;
+    color: var(--gold);
+  }
+  .counter-l{
+    font-size: 11.5px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
   /* chain */
   .chain-card{
     background: var(--surface);
@@ -565,6 +597,19 @@
     </div>
   </section>
 
+  <div class="counters">
+    <div class="counter">
+      <span class="counter-icon">🏃</span>
+      <span class="counter-n" id="countActivity">0</span>
+      <span class="counter-l">активность</span>
+    </div>
+    <div class="counter">
+      <span class="counter-icon">📚</span>
+      <span class="counter-n" id="countGrowth">0</span>
+      <span class="counter-l">саморазвитие</span>
+    </div>
+  </div>
+
   <div class="grid">
 
     <!-- LEFT: tasks -->
@@ -746,6 +791,7 @@
       var k2 = todayKey();
       state.completedDates[k2] = (state.completedDates[k2]||0) + 1;
       state.totalCompleted += 1;
+      if(task.recurrence) task.lastDoneCycle = k2;
       celebrate(originEl);
       checkMilestone(state.completedDates[k2]);
     }
@@ -771,6 +817,32 @@
 
   function toggleQuick(task){ task.quick = !task.quick; saveState(); render(); }
   function toggleGoalTag(task){ task.goalTagged = !task.goalTagged; saveState(); render(); }
+
+  var WEEKDAY_RU_SHORT = ["вс","пн","вт","ср","чт","пт","сб"];
+  function recurrenceLabel(rec){
+    if(rec === "daily") return "каждый день";
+    var m = /^weekly:([0-6])$/.exec(rec || "");
+    if(m) return "по " + ["воскресеньям","понедельникам","вторникам","средам","четвергам","пятницам","субботам"][+m[1]];
+    return "";
+  }
+  function toggleRecurrence(task){
+    if(!task.recurrence){
+      task.recurrence = "daily";
+    } else if(task.recurrence === "daily"){
+      task.recurrence = "weekly:" + new Date().getDay();
+    } else {
+      task.recurrence = null;
+      task.remindTime = null;
+    }
+    task.lastDoneCycle = null;
+    task.remindedThisCycle = false;
+    saveState(); render();
+  }
+
+  function toggleCategory(task){
+    task.category = task.category === "activity" ? "growth" : (task.category === "growth" ? null : "activity");
+    saveState(); render();
+  }
 
   function setWhy(task, val){ task.why = val.trim(); saveState(); render(); }
 
@@ -906,6 +978,20 @@
     goalPill.addEventListener("click", function(){ toggleGoalTag(task); });
     meta.appendChild(goalPill);
 
+    var recPill = document.createElement("button");
+    recPill.className = "pill" + (task.recurrence ? " active" : "");
+    recPill.textContent = task.recurrence ? "🔁 " + recurrenceLabel(task.recurrence) : "🔁 разово";
+    recPill.title = "Разово → каждый день → по дню недели → разово";
+    recPill.addEventListener("click", function(){ toggleRecurrence(task); });
+    meta.appendChild(recPill);
+
+    var catLabels = { activity: "🏃 активность", growth: "📚 саморазвитие" };
+    var catPill = document.createElement("button");
+    catPill.className = "pill" + (task.category ? " active" : "");
+    catPill.textContent = catLabels[task.category] || "+ категория";
+    catPill.addEventListener("click", function(){ toggleCategory(task); });
+    meta.appendChild(catPill);
+
     var whyBtn = document.createElement("button");
     whyBtn.className = "pill";
     whyBtn.textContent = task.why ? "изменить «зачем»" : "+ зачем это";
@@ -1022,6 +1108,10 @@
       document.getElementById("goalDays").textContent = daysLeft;
       document.getElementById("goalDone").textContent = state.tasks.filter(function(t){ return t.done && t.goalTagged; }).length;
     }
+
+    // category counters (all-time completions)
+    document.getElementById("countActivity").textContent = state.tasks.filter(function(t){ return t.done && t.category === "activity"; }).length;
+    document.getElementById("countGrowth").textContent = state.tasks.filter(function(t){ return t.done && t.category === "growth"; }).length;
 
     // stats
     document.getElementById("statStreak").textContent = computeStreak();
