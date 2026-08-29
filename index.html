@@ -572,7 +572,15 @@
   "use strict";
 
   var STORE_KEY = "iskra-state-v1";
+  var API_BASE = "https://iskra-api.fjtbbfptmk.workers.dev"; // set after the Cloudflare Worker is deployed
   var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  function tgInitData(){
+    return (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData) || "";
+  }
+  function apiReady(){
+    return API_BASE.indexOf("__") !== 0 && !!tgInitData();
+  }
 
   var TECHNIQUES = [
     ["Не разрывай цепочку", "Отмечай день, когда выполнена хоть одна задача. Цепочка дней сама не даст всё бросить."],
@@ -606,8 +614,34 @@
     }catch(e){}
     return { tasks: [], completedDates: {}, totalCompleted: 0 };
   }
+  var pushTimer = null;
+  function pushToServer(){
+    if(!apiReady()) return;
+    clearTimeout(pushTimer);
+    pushTimer = setTimeout(function(){
+      fetch(API_BASE + "/api/state", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "X-Telegram-Init-Data": tgInitData() },
+        body: JSON.stringify(state)
+      }).catch(function(){});
+    }, 500);
+  }
+
   function saveState(){
     try{ localStorage.setItem(STORE_KEY, JSON.stringify(state)); }catch(e){}
+    pushToServer();
+  }
+
+  function pullFromServer(){
+    if(!apiReady()) return;
+    fetch(API_BASE + "/api/state", {
+      headers: { "X-Telegram-Init-Data": tgInitData() }
+    }).then(function(r){ return r.ok ? r.json() : null; }).then(function(remote){
+      if(!remote) return;
+      state = remote;
+      try{ localStorage.setItem(STORE_KEY, JSON.stringify(state)); }catch(e){}
+      render();
+    }).catch(function(){});
   }
 
   var state = loadState();
@@ -991,6 +1025,7 @@
   });
 
   render();
+  pullFromServer();
 })();
 </script>
 
