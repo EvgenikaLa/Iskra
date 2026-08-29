@@ -174,6 +174,17 @@
     font-size: 19px;
     margin: 0;
   }
+  .goal-stall{
+    display: inline-block;
+    margin: 8px 0 0;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    letter-spacing: 0.03em;
+    color: var(--accent-ink);
+    background: var(--accent);
+    border-radius: 999px;
+    padding: 4px 10px;
+  }
   .goal-nums{ display: flex; gap: 24px; }
   .goal-num{ text-align: right; font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
   .goal-num .n{ display: block; font-size: 24px; font-weight: 500; }
@@ -584,6 +595,7 @@
     <div class="goal-top">
       <p class="goal-label">Цель</p>
       <p class="goal-title" id="goalTitle"></p>
+      <p class="goal-stall" id="goalStall" style="display:none"></p>
     </div>
     <div class="goal-nums">
       <div class="goal-num">
@@ -1107,6 +1119,22 @@
       var daysLeft = Math.ceil((target - Date.now()) / 86400000);
       document.getElementById("goalDays").textContent = daysLeft;
       document.getElementById("goalDone").textContent = state.tasks.filter(function(t){ return t.done && t.goalTagged; }).length;
+
+      var goalDoneAts = state.tasks.filter(function(t){ return t.done && t.goalTagged && t.doneAt; }).map(function(t){ return t.doneAt; });
+      var stallEl = document.getElementById("goalStall");
+      if(goalDoneAts.length){
+        var lastGoalDone = Math.max.apply(null, goalDoneAts);
+        var staleDays = Math.floor((Date.now() - lastGoalDone) / 86400000);
+        if(staleDays >= 2){
+          stallEl.textContent = staleDays + " " + (staleDays === 1 ? "день" : "дней") + " без шага к цели";
+          stallEl.style.display = "inline-block";
+        } else {
+          stallEl.style.display = "none";
+        }
+      } else {
+        stallEl.textContent = "ещё ни одного шага к цели";
+        stallEl.style.display = "inline-block";
+      }
     }
 
     // category counters (all-time completions)
