@@ -147,6 +147,38 @@
   }
   .panel-title .flame{ color: var(--accent); }
 
+  /* goal */
+  .goal-card{
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    background: var(--pine);
+    color: var(--accent-ink);
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin-bottom: 22px;
+  }
+  .goal-label{
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    opacity: 0.75;
+    margin: 0 0 4px;
+  }
+  .goal-title{
+    font-family: "Bricolage Grotesque", sans-serif;
+    font-weight: 700;
+    font-size: 19px;
+    margin: 0;
+  }
+  .goal-nums{ display: flex; gap: 24px; }
+  .goal-num{ text-align: right; font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
+  .goal-num .n{ display: block; font-size: 24px; font-weight: 500; }
+  .goal-num .l{ display: block; font-size: 10px; letter-spacing: 0.05em; text-transform: uppercase; opacity: 0.75; margin-top: 2px; }
+
   /* chain */
   .chain-card{
     background: var(--surface);
@@ -516,6 +548,23 @@
     </div>
   </header>
 
+  <section class="goal-card" id="goalCard" style="display:none">
+    <div class="goal-top">
+      <p class="goal-label">Цель</p>
+      <p class="goal-title" id="goalTitle"></p>
+    </div>
+    <div class="goal-nums">
+      <div class="goal-num">
+        <span class="n" id="goalDays">0</span>
+        <span class="l">дней до цели</span>
+      </div>
+      <div class="goal-num">
+        <span class="n" id="goalDone">0</span>
+        <span class="l">шагов сделано</span>
+      </div>
+    </div>
+  </section>
+
   <div class="grid">
 
     <!-- LEFT: tasks -->
@@ -719,6 +768,7 @@
   }
 
   function toggleQuick(task){ task.quick = !task.quick; saveState(); render(); }
+  function toggleGoalTag(task){ task.goalTagged = !task.goalTagged; saveState(); render(); }
 
   function setWhy(task, val){ task.why = val.trim(); saveState(); render(); }
 
@@ -847,6 +897,13 @@
     quick.addEventListener("click", function(){ toggleQuick(task); });
     meta.appendChild(quick);
 
+    var goalPill = document.createElement("button");
+    goalPill.className = "pill" + (task.goalTagged ? " active" : "");
+    goalPill.textContent = "к цели";
+    goalPill.title = "Отметить как шаг к цели";
+    goalPill.addEventListener("click", function(){ toggleGoalTag(task); });
+    meta.appendChild(goalPill);
+
     var whyBtn = document.createElement("button");
     whyBtn.className = "pill";
     whyBtn.textContent = task.why ? "изменить «зачем»" : "+ зачем это";
@@ -953,6 +1010,17 @@
   }
 
   function render(){
+    // goal
+    if(state.goal && state.goal.targetDate){
+      var goalCard = document.getElementById("goalCard");
+      goalCard.style.display = "flex";
+      document.getElementById("goalTitle").textContent = state.goal.title;
+      var target = new Date(state.goal.targetDate + "T00:00:00+03:00").getTime();
+      var daysLeft = Math.ceil((target - Date.now()) / 86400000);
+      document.getElementById("goalDays").textContent = daysLeft;
+      document.getElementById("goalDone").textContent = state.tasks.filter(function(t){ return t.done && t.goalTagged; }).length;
+    }
+
     // stats
     document.getElementById("statStreak").textContent = computeStreak();
     document.getElementById("statToday").textContent = state.completedDates[todayKey()] || 0;
